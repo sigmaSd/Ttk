@@ -1,8 +1,3 @@
-use std::cell::RefCell;
-use std::io::Write;
-use std::unreachable;
-use std::{ops::Range, rc::Rc};
-
 use crossterm::{
     cursor::{Hide, MoveDown, MoveTo, MoveToColumn, MoveToNextLine, MoveUp, Show},
     event::{DisableMouseCapture, EnableMouseCapture, Event, MouseEventKind},
@@ -10,9 +5,44 @@ use crossterm::{
     style::Print,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
-
+use std::cell::RefCell;
+use std::io::Write;
+use std::unreachable;
+use std::{ops::Range, rc::Rc};
 type RR<T> = Rc<RefCell<T>>;
 
+//*******Widgets*************
+
+//***WidgetsList****
+pub enum Type {
+    Box(Box),
+    Window(Window),
+    Label(Label),
+    Button(Button),
+    Entry(Entry),
+    List(List),
+}
+
+impl std::fmt::Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Box(_) => write!(f, "box"),
+            Type::Window(_) => write!(f, "win"),
+            Type::Label(_) => write!(f, "label"),
+            Type::Button(_) => write!(f, "btn"),
+            Type::Entry(_) => write!(f, "entry"),
+            Type::List(_) => write!(f, "list"),
+        }
+    }
+}
+
+//****Widget Trait****
+pub trait Widget {
+    fn downcast(&'static self) -> Type;
+    fn text(&self) -> &'static str;
+}
+
+//**Box**
 pub struct Box(RR<_Box>);
 struct _Box {
     orientation: Orientation,
@@ -57,6 +87,8 @@ pub enum Orientation {
     Horizontal,
     Vertical,
 }
+
+//**Label**
 pub struct Label(RR<_Label>);
 struct _Label {
     label: &'static str,
@@ -83,6 +115,7 @@ impl Widget for Label {
     }
 }
 
+//**Button**
 pub struct Button(RR<_Button>);
 struct _Button {
     label: &'static str,
@@ -116,32 +149,8 @@ impl Widget for Button {
         self.0.borrow().label
     }
 }
-pub trait Widget {
-    fn downcast(&'static self) -> Type;
-    fn text(&self) -> &'static str;
-}
 
-pub enum Type {
-    Box(Box),
-    Window(Window),
-    Label(Label),
-    Button(Button),
-    Entry(Entry),
-    List(List),
-}
-impl std::fmt::Debug for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Box(_) => write!(f, "box"),
-            Type::Window(_) => write!(f, "win"),
-            Type::Label(_) => write!(f, "label"),
-            Type::Button(_) => write!(f, "btn"),
-            Type::Entry(_) => write!(f, "entry"),
-            Type::List(_) => write!(f, "list"),
-        }
-    }
-}
-
+//**Window**
 pub struct Window(RR<_Window>);
 struct _Window {
     child: Vec<&'static dyn Widget>,
@@ -160,6 +169,9 @@ impl Window {
         let child = unsafe { std::mem::transmute(child) };
         self.0.borrow_mut().child.insert(0, child);
     }
+    fn set_size(&self, size: (usize, usize)) {
+        self.0.borrow_mut().size = size;
+    }
 }
 
 impl Clone for Window {
@@ -176,6 +188,7 @@ impl Widget for Window {
     }
 }
 
+//**Entry**
 pub struct Entry(RR<_Entry>);
 struct _Entry {
     buffer: String,
@@ -219,6 +232,60 @@ impl Widget for Entry {
     }
 }
 
+//****List****
+pub struct List(RR<_List>);
+struct _List {
+    items: Vec<&'static dyn Widget>,
+    filter: Option<&'static str>,
+}
+impl Widget for List {
+    fn downcast(&'static self) -> Type {
+        Type::List(self.clone())
+    }
+    fn text(&self) -> &'static str {
+        unreachable!()
+    }
+}
+impl Clone for List {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl List {
+    pub fn new() -> Self {
+        Self(Rc::new(RefCell::new(_List {
+            items: vec![],
+            filter: None,
+        })))
+    }
+    fn get_children(&self) -> Vec<&'static dyn Widget> {
+        if let Some(filter) = self.0.borrow().filter {
+            self.0
+                .borrow()
+                .items
+                .iter()
+                .filter(|i| i.text().contains(filter))
+                .map(ToOwned::to_owned)
+                .collect()
+        } else {
+            self.0
+                .borrow()
+                .items
+                .iter()
+                .map(ToOwned::to_owned)
+                .collect()
+        }
+    }
+    pub fn add<'a>(&self, widget: &'a dyn Widget) {
+        let widget: &'static dyn Widget = unsafe { std::mem::transmute(widget) };
+        self.0.borrow_mut().items.push(widget);
+    }
+    pub fn set_filter(&self, filter: &'static str) {
+        self.0.borrow_mut().filter = Some(filter);
+    }
+}
+
+//***Main Logic****
 enum TEvent {
     MouseClick((usize, usize)),
     Nop,
@@ -270,6 +337,13 @@ fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
             }) => {
                 draw_inner(widget, size, &TEvent::Key(Key::Backspace));
             }
+            crossterm::event::Event::Resize(cols, rows) => {
+                win.set_size((cols as usize, rows as usize));
+                let size = win.0.borrow().size;
+                let size = (0..size.0, 0..size.1);
+                draw_inner(widget, size, &TEvent::Key(Key::Backspace));
+            }
+
             _ => (),
         },
         Err(_) => {}
@@ -369,57 +443,6 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
         _ => unreachable!(),
     }
 }
-pub struct List(RR<_List>);
-struct _List {
-    items: Vec<&'static dyn Widget>,
-    filter: Option<&'static str>,
-}
-impl Widget for List {
-    fn downcast(&'static self) -> Type {
-        Type::List(self.clone())
-    }
-    fn text(&self) -> &'static str {
-        unreachable!()
-    }
-}
-impl Clone for List {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-impl List {
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(_List {
-            items: vec![],
-            filter: None,
-        })))
-    }
-    fn get_children(&self) -> Vec<&'static dyn Widget> {
-        if let Some(filter) = self.0.borrow().filter {
-            self.0
-                .borrow()
-                .items
-                .iter()
-                .filter(|i| i.text().contains(filter))
-                .map(ToOwned::to_owned)
-                .collect()
-        } else {
-            self.0
-                .borrow()
-                .items
-                .iter()
-                .map(ToOwned::to_owned)
-                .collect()
-        }
-    }
-    pub fn add<'a>(&self, widget: &'a dyn Widget) {
-        let widget: &'static dyn Widget = unsafe { std::mem::transmute(widget) };
-        self.0.borrow_mut().items.push(widget);
-    }
-    pub fn set_filter(&self, filter: &'static str) {
-        self.0.borrow_mut().filter = Some(filter);
-    }
-}
 
 pub fn main(win: &Window) {
     crossterm::terminal::enable_raw_mode().unwrap();
@@ -447,6 +470,7 @@ pub fn main(win: &Window) {
     crossterm::queue!(std::io::stdout(), Show).unwrap();
 }
 
+// helpers
 fn div(r: std::ops::Range<usize>, d: usize) -> Vec<Range<usize>> {
     if d == 0 || d == 1 {
         return vec![r];
