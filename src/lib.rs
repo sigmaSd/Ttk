@@ -576,6 +576,7 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
 }
 
 pub fn main(win: &Window) {
+    let _g = Guard;
     crossterm::terminal::enable_raw_mode().unwrap();
     crossterm::queue!(std::io::stdout(), EnterAlternateScreen).unwrap();
     crossterm::queue!(std::io::stdout(), EnableMouseCapture).unwrap();
@@ -595,10 +596,16 @@ pub fn main(win: &Window) {
             break;
         }
     }
-    crossterm::terminal::disable_raw_mode().unwrap();
-    crossterm::queue!(std::io::stdout(), LeaveAlternateScreen).unwrap();
-    crossterm::queue!(std::io::stdout(), DisableMouseCapture).unwrap();
-    crossterm::queue!(std::io::stdout(), Show).unwrap();
+}
+
+struct Guard;
+impl Drop for Guard {
+    fn drop(&mut self) {
+        crossterm::terminal::disable_raw_mode().unwrap();
+        crossterm::queue!(std::io::stdout(), LeaveAlternateScreen).unwrap();
+        crossterm::queue!(std::io::stdout(), DisableMouseCapture).unwrap();
+        crossterm::queue!(std::io::stdout(), Show).unwrap();
+    }
 }
 
 // helpers
