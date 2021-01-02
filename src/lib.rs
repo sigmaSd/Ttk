@@ -42,56 +42,177 @@ impl std::fmt::Debug for Type {
 pub trait Widget {
     fn downcast(&self) -> Type;
     fn text(&self) -> &str;
-    fn draw(&self, stdout: &mut std::io::StdoutLock, width_max: usize) {
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
         let text = self.text();
-        if text.len() > width_max {
+        let width = area.width();
+        if text.len() > width {
             crossterm::queue!(
                 stdout,
-                Print(String::from_utf8_lossy(&text.as_bytes()[..width_max]))
+                Print(String::from_utf8_lossy(&text.as_bytes()[..width]))
             )
             .unwrap();
         } else {
             crossterm::queue!(stdout, Print(text)).unwrap();
         }
     }
+    fn event(&self, _event: TEvent, _area: Area, _stdout: &mut std::io::StdoutLock);
+    fn get_active_state(&self) -> &RefCell<bool>;
+    fn activate(&self, _area: Area, _stdout: &mut std::io::StdoutLock) {
+        *self.get_active_state().borrow_mut() = true;
+    }
+    fn deactivate(&self, _area: Area, _stdout: &mut std::io::StdoutLock) {
+        *self.get_active_state().borrow_mut() = false;
+    }
+
+    fn is_active(&self) -> bool {
+        *self.get_active_state().borrow()
+    }
 }
 //**Container Trait **/
 pub trait Container: Widget {
-    const MARGIN: usize = 1;
     fn add(&self, widget: Rc<dyn Widget>);
     fn get_children(&self) -> Vec<Rc<dyn Widget>>;
+    fn get_children_area(&self, area: Area) -> Vec<Area>;
     fn get_child(&self, n: usize) -> Rc<dyn Widget> {
         self.get_children().remove(n)
     }
+    fn get_children_num(&self) -> usize {
+        self.get_children().into_iter().count()
+    }
     fn clear(&self);
+    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock);
 }
 
+//***Area */
+//The area the widget can be drawn on
+// Also serves to catch signals
+#[derive(Clone, Debug)]
+pub struct Area {
+    horizontal: Range<usize>,
+    vertical: Range<usize>,
+}
+impl Area {
+    fn width(&self) -> usize {
+        self.horizontal.end - self.horizontal.start
+    }
+    fn height(&self) -> usize {
+        self.vertical.end - self.vertical.start
+    }
+    fn split_horizontal(self, n: usize) -> Vec<Area> {
+        div(self.horizontal.clone(), n)
+            .into_iter()
+            .map(|new_horizontal| Area {
+                horizontal: new_horizontal,
+                vertical: self.vertical.clone(),
+            })
+            .collect()
+    }
+    fn split_vertical(self, n: usize) -> Vec<Area> {
+        div(self.vertical.clone(), n)
+            .into_iter()
+            .map(|new_vertical| Area {
+                horizontal: self.horizontal.clone(),
+                vertical: new_vertical,
+            })
+            .collect()
+    }
+    fn contains(&self, pos: &(usize, usize)) -> bool {
+        self.horizontal.contains(&pos.0) && self.vertical.contains(&pos.1)
+    }
+    fn left_up(&self) -> (usize, usize) {
+        (self.horizontal.start, self.vertical.start)
+    }
+}
+impl From<(Range<usize>, Range<usize>)> for Area {
+    fn from(area: (Range<usize>, Range<usize>)) -> Self {
+        Area {
+            horizontal: area.0,
+            vertical: area.1,
+        }
+    }
+}
+impl From<(usize, usize)> for Area {
+    fn from(area: (usize, usize)) -> Self {
+        Area {
+            horizontal: 0..area.0,
+            vertical: 0..area.1,
+        }
+    }
+}
+
+//****Actual Widgets*** */
 //**Box**
-pub struct Box(RR<_Box>);
+pub struct Box(RR<_Box>, RefCell<bool>);
 struct _Box {
     orientation: Orientation,
     children: Vec<Rc<dyn Widget>>,
 }
 impl Widget for Box {
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
     fn downcast(&self) -> Type {
         Type::Box(self.clone())
     }
     fn text(&self) -> &str {
         unreachable!()
     }
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+        match self.get_orientation() {
+            Orientation::Horizontal => {
+                let children = self.get_children();
+                let step = area.width() / self.get_children_num();
+                let children_area = self.get_children_area(area);
+
+                for (idx, (child, area)) in children
+                    .into_iter()
+                    .zip(children_area.into_iter())
+                    .enumerate()
+                {
+                    queue!(stdout, MoveToColumn((idx * step) as u16)).unwrap();
+                    child.draw(stdout, area);
+                }
+            }
+            Orientation::Vertical => {
+                let children = self.get_children();
+                let step = area.height() / self.get_children_num();
+                let children_area = self.get_children_area(area);
+
+                for (idx, (child, area)) in children
+                    .into_iter()
+                    .zip(children_area.into_iter())
+                    .enumerate()
+                {
+                    //todo add movetorow
+                    queue!(stdout, MoveUp(500)).unwrap();
+                    queue!(stdout, MoveDown((idx * step) as u16)).unwrap();
+                    child.draw(stdout, area);
+                }
+            }
+        }
+    }
+    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        self.propagate_event(event, area, stdout);
+    }
 }
 impl Clone for Box {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 
 impl Box {
     pub fn new(orientation: Orientation) -> Rc<Self> {
-        Rc::new(Self(Rc::new(RefCell::new(_Box {
-            orientation,
-            children: vec![],
-        }))))
+        Rc::new(Self(
+            Rc::new(RefCell::new(_Box {
+                orientation,
+                children: vec![],
+            })),
+            RefCell::new(false),
+        ))
+    }
+    pub fn get_orientation(&self) -> Orientation {
+        self.0.borrow().orientation
     }
 }
 
@@ -102,23 +223,47 @@ impl Container for Box {
     fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         self.0.borrow().children.iter().cloned().collect()
     }
+    fn get_children_num(&self) -> usize {
+        self.0.borrow().children.iter().count()
+    }
+    fn get_children_area(&self, area: Area) -> Vec<Area> {
+        let num = self.get_children_num();
+        match self.get_orientation() {
+            Orientation::Vertical => area.split_vertical(num),
+            Orientation::Horizontal => area.split_horizontal(num),
+        }
+    }
     fn clear(&self) {
         self.0.borrow_mut().children.clear();
     }
+    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        let children = self.get_children();
+        let children_area = self.get_children_area(area);
+        children
+            .into_iter()
+            .zip(children_area.into_iter())
+            .for_each(|(child, area)| {
+                child.event(event, area, stdout);
+            });
+    }
 }
+#[derive(Clone, Copy)]
 pub enum Orientation {
     Horizontal,
     Vertical,
 }
 
 //**Label**
-pub struct Label(RR<_Label>);
+pub struct Label(RR<_Label>, RefCell<bool>);
 struct _Label {
     label: &'static str,
 }
 impl Label {
     pub fn new(label: &'static str) -> Rc<Self> {
-        Rc::new(Self(Rc::new(RefCell::new(_Label { label }))))
+        Rc::new(Self(
+            Rc::new(RefCell::new(_Label { label })),
+            RefCell::new(false),
+        ))
     }
     pub fn set_text(&self, text: &'static str) {
         self.0.borrow_mut().label = text;
@@ -126,7 +271,7 @@ impl Label {
 }
 impl Clone for Label {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 impl Widget for Label {
@@ -136,20 +281,27 @@ impl Widget for Label {
     fn text(&self) -> &'static str {
         self.0.borrow().label
     }
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
+    fn event(&self, _event: TEvent, _area: Area, _stdout: &mut std::io::StdoutLock) {}
 }
 
 //**Button**
-pub struct Button(RR<_Button>);
+pub struct Button(RR<_Button>, RefCell<bool>);
 struct _Button {
     label: String,
     signal: Option<std::boxed::Box<dyn Fn()>>,
 }
 impl Button {
     pub fn new(label: String) -> Rc<Self> {
-        Rc::new(Self(Rc::new(RefCell::new(_Button {
-            label,
-            signal: None,
-        }))))
+        Rc::new(Self(
+            Rc::new(RefCell::new(_Button {
+                label,
+                signal: None,
+            })),
+            RefCell::new(false),
+        ))
     }
     pub fn connect_clicked<F: Fn() + 'static>(&self, fun: F) {
         self.0.borrow_mut().signal = Some(std::boxed::Box::new(fun));
@@ -160,7 +312,7 @@ impl Button {
 }
 impl Clone for Button {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 
@@ -171,31 +323,47 @@ impl Widget for Button {
     fn text(&self) -> &'static str {
         std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().label.clone()))
     }
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
+    fn event(&self, event: TEvent, area: Area, _stdout: &mut std::io::StdoutLock) {
+        if let TEvent::MouseClick(pos) = event {
+            if area.contains(&pos) {
+                self.click();
+            }
+        }
+    }
 }
 
 //**Window**
-pub struct Window(RR<_Window>);
+pub struct Window(RR<_Window>, RefCell<bool>);
 struct _Window {
     child: Vec<Rc<dyn Widget>>,
-    size: (usize, usize),
+    area: Area,
 }
 impl Window {
     pub fn new() -> Rc<Self> {
         let (w, h) = crossterm::terminal::size().unwrap();
-        let size = (w as usize, h as usize);
-        Rc::new(Self(Rc::new(RefCell::new(_Window {
-            child: vec![],
-            size,
-        }))))
+        let area = (w as usize, h as usize).into();
+        Rc::new(Self(
+            Rc::new(RefCell::new(_Window {
+                child: vec![],
+                area,
+            })),
+            RefCell::new(true),
+        ))
     }
-    fn set_size(&self, size: (usize, usize)) {
-        self.0.borrow_mut().size = size;
+    fn set_area(&self, area: Area) {
+        self.0.borrow_mut().area = area;
+    }
+    fn get_area(&self) -> Area {
+        self.0.borrow().area.clone()
     }
 }
 
 impl Clone for Window {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 impl Widget for Window {
@@ -204,6 +372,12 @@ impl Widget for Window {
     }
     fn text(&self) -> &'static str {
         unreachable!()
+    }
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
+    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        self.propagate_event(event, area, stdout);
     }
 }
 impl Container for Window {
@@ -216,24 +390,31 @@ impl Container for Window {
     fn clear(&self) {
         self.0.borrow_mut().child.clear();
     }
+    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        self.get_child(0).event(event, area, stdout);
+    }
+    fn get_children_area(&self, _area: Area) -> Vec<Area> {
+        vec![self.get_area().clone()]
+    }
 }
 
 //**Entry**
-pub struct Entry(RR<_Entry>);
+pub struct Entry(RR<_Entry>, RefCell<bool>);
 struct _Entry {
     buffer: String,
-    active: bool,
     changed_signal: Option<std::boxed::Box<dyn Fn(&Entry)>>,
     enter_signal: Option<std::boxed::Box<dyn Fn(&Entry)>>,
 }
 impl Entry {
     pub fn new() -> Rc<Self> {
-        Rc::new(Entry(Rc::new(RefCell::new(_Entry {
-            buffer: String::new(),
-            active: false,
-            changed_signal: None,
-            enter_signal: None,
-        }))))
+        Rc::new(Entry(
+            Rc::new(RefCell::new(_Entry {
+                buffer: String::new(),
+                changed_signal: None,
+                enter_signal: None,
+            })),
+            RefCell::new(false),
+        ))
     }
     pub fn connect_changed<F: Fn(&Self) + 'static>(&self, fun: F) {
         self.0.borrow_mut().changed_signal = Some(std::boxed::Box::new(fun));
@@ -259,30 +440,81 @@ impl Entry {
 }
 impl Clone for Entry {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 impl Widget for Entry {
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
     fn downcast(&self) -> Type {
         Type::Entry(self.clone())
     }
     fn text(&self) -> &'static str {
         std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().buffer.clone()))
     }
+    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        match event {
+            TEvent::MouseClick(pos) => {
+                if area.contains(&pos) {
+                    self.activate(area.clone(), stdout);
+                } else {
+                    self.deactivate(area.clone(), stdout);
+                }
+            }
+            TEvent::Key(Key::Char(c)) if self.is_active() => {
+                self.push(c);
+            }
+            TEvent::Key(Key::Backspace) if self.is_active() => {
+                self.pop();
+            }
+            TEvent::Key(Key::Enter) if self.is_active() => {
+                if let Some(sig) = self.0.borrow().enter_signal.as_ref() {
+                    sig(&self)
+                }
+            }
+            _ => (),
+        }
+        self.draw(stdout, area);
+    }
+    fn activate(&self, area: Area, stdout: &mut std::io::StdoutLock) {
+        *self.1.borrow_mut() = true;
+        queue!(
+            stdout,
+            MoveTo(area.left_up().0 as u16, area.left_up().1 as u16)
+        )
+        .unwrap();
+    }
 }
 
 //****List****
-pub struct List(RR<_List>);
+pub struct List(RR<_List>, RefCell<bool>);
 struct _List {
     items: Vec<Rc<dyn Widget>>,
     filter: Option<&'static str>,
 }
 impl Widget for List {
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
     fn downcast(&self) -> Type {
         Type::List(self.clone())
     }
     fn text(&self) -> &'static str {
         unreachable!()
+    }
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+        let children = self.get_children();
+        let children_area = self.get_children_area(area);
+
+        queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
+        for (child, area) in children.into_iter().zip(children_area.into_iter()) {
+            child.draw(stdout, area);
+            queue!(stdout, MoveToNextLine(1)).unwrap();
+        }
+    }
+    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        self.propagate_event(event, area, stdout);
     }
 }
 impl Container for List {
@@ -307,18 +539,35 @@ impl Container for List {
             self.0.borrow().items.iter().cloned().collect()
         }
     }
+    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        let children = self.get_children();
+        let children_area = self.get_children_area(area);
+        children
+            .into_iter()
+            .zip(children_area.into_iter())
+            .for_each(|(child, area)| child.event(event, area, stdout));
+    }
+    fn get_children_area(&self, area: Area) -> Vec<Area> {
+        area.split_vertical(self.get_children_num())
+    }
+    fn get_children_num(&self) -> usize {
+        self.0.borrow().items.iter().count()
+    }
 }
 impl Clone for List {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 impl List {
     pub fn new() -> Rc<Self> {
-        Rc::new(Self(Rc::new(RefCell::new(_List {
-            items: vec![],
-            filter: None,
-        }))))
+        Rc::new(Self(
+            Rc::new(RefCell::new(_List {
+                items: vec![],
+                filter: None,
+            })),
+            RefCell::new(false),
+        ))
     }
     pub fn set_filter(&self, filter: &'static str) {
         self.0.borrow_mut().filter = Some(filter);
@@ -330,7 +579,7 @@ impl List {
 }
 
 //**Grid***
-pub struct Grid(RR<_Grid>);
+pub struct Grid(RR<_Grid>, RefCell<bool>);
 struct _Grid {
     items: Vec<Rc<dyn Widget>>,
     width: usize,
@@ -338,23 +587,49 @@ struct _Grid {
 }
 impl Grid {
     pub fn new(width: usize) -> Rc<Self> {
-        Rc::new(Self(Rc::new(RefCell::new(_Grid {
-            items: vec![],
-            width,
-            filter: None,
-        }))))
+        Rc::new(Self(
+            Rc::new(RefCell::new(_Grid {
+                items: vec![],
+                width,
+                filter: None,
+            })),
+            RefCell::new(false),
+        ))
     }
     pub fn set_filter(&self, filter: &'static str) {
         self.0.borrow_mut().filter = Some(filter);
     }
+    fn get_width(&self) -> usize {
+        self.0.borrow().width
+    }
 }
 
 impl Widget for Grid {
+    fn get_active_state(&self) -> &RefCell<bool> {
+        &self.1
+    }
     fn downcast(&self) -> Type {
         Type::Grid(self.clone())
     }
     fn text(&self) -> &str {
         unreachable!()
+    }
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+        let children = self.get_children();
+        let children_area = self.get_children_area(area);
+
+        queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
+        for (child, area) in children.into_iter().zip(children_area.into_iter()) {
+            queue!(
+                stdout,
+                MoveTo(area.left_up().0 as u16, area.left_up().1 as u16)
+            )
+            .unwrap();
+            child.draw(stdout, area);
+        }
+    }
+    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        self.propagate_event(event, area, stdout);
     }
 }
 impl Container for Grid {
@@ -365,7 +640,7 @@ impl Container for Grid {
         self.0.borrow_mut().items.clear();
     }
 
-    fn get_children<'a>(&'a self) -> Vec<Rc<dyn Widget>> {
+    fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         if let Some(filter) = self.0.borrow().filter {
             self.0
                 .borrow()
@@ -378,44 +653,95 @@ impl Container for Grid {
             self.0.borrow().items.iter().cloned().collect()
         }
     }
+    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+        let children = self.get_children();
+        let children_area = self.get_children_area(area);
+        children
+            .into_iter()
+            .zip(children_area.into_iter())
+            .for_each(|(child, area)| {
+                child.event(event, area, stdout);
+            })
+    }
+    fn get_children_area(&self, area: Area) -> Vec<Area> {
+        let children_num = self.get_children_num();
+        if children_num == 0 {
+            return vec![];
+        }
+
+        let width = self.get_width();
+        let areas = area.split_horizontal(width);
+        let height = children_num / width;
+        let vertical_areas: Vec<_> = areas
+            .clone()
+            .into_iter()
+            .map(|area| area.split_vertical(height))
+            .collect();
+
+        let mut children_area = vec![];
+        let mut h_idx = 0;
+        let mut v_idx = 0;
+        loop {
+            children_area.push(vertical_areas[h_idx][v_idx].clone());
+            h_idx += 1;
+            if h_idx == width {
+                h_idx = 0;
+                v_idx += 1;
+            }
+            if v_idx == vertical_areas[0].len() {
+                break;
+            }
+        }
+        children_area
+    }
+    fn get_children_num(&self) -> usize {
+        self.0.borrow().items.iter().count()
+    }
 }
 
 impl Clone for Grid {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(self.0.clone(), self.1.clone())
     }
 }
 
-//***Main Logic****
-enum TEvent {
+//***Events***
+#[derive(Clone, Copy)]
+pub enum TEvent {
     MouseClick((usize, usize)),
     Nop,
     Key(Key),
 }
-enum Key {
+#[derive(Clone, Copy)]
+pub enum Key {
     Char(char),
     Backspace,
     Enter,
 }
 
-fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
-    let size = win.0.borrow().size;
-    let size = (0..size.0, 0..size.1);
+//***Drawing entry point */
+// Must start with a Window
+fn draw(
+    win: &Window,
+    stdout: &mut std::io::StdoutLock,
+    rx: &std::sync::mpsc::Receiver<Event>,
+) -> bool {
     let widget = win.get_child(0);
+    let mut area = win.get_area();
 
-    // draw once atleast
-    draw_inner(&*widget, size.clone(), &TEvent::Nop);
-    // flush happens here each frame
-    std::io::stdout().flush().unwrap();
+    // draw once at-least
+    widget.draw(stdout, area.clone());
+    // flushing happens here each iteration
+    stdout.flush().unwrap();
 
     match rx.recv() {
         Ok(ev) => match ev {
             crossterm::event::Event::Mouse(m) => {
                 if let MouseEventKind::Down(_) = m.kind {
-                    draw_inner(
-                        &*widget,
-                        size,
-                        &TEvent::MouseClick((m.column as usize, m.row as usize)),
+                    widget.event(
+                        TEvent::MouseClick((m.column as usize, m.row as usize)),
+                        area,
+                        stdout,
                     );
                 }
             }
@@ -431,25 +757,24 @@ fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
                 code: crossterm::event::KeyCode::Char(c),
                 ..
             }) => {
-                draw_inner(&*widget, size, &TEvent::Key(Key::Char(c)));
+                widget.event(TEvent::Key(Key::Char(c)), area, stdout);
             }
             crossterm::event::Event::Key(crossterm::event::KeyEvent {
                 code: crossterm::event::KeyCode::Backspace,
                 ..
             }) => {
-                draw_inner(&*widget, size, &TEvent::Key(Key::Backspace));
+                widget.event(TEvent::Key(Key::Backspace), area, stdout);
             }
             crossterm::event::Event::Key(crossterm::event::KeyEvent {
                 code: crossterm::event::KeyCode::Enter,
                 ..
             }) => {
-                draw_inner(&*widget, size, &TEvent::Key(Key::Enter));
+                widget.event(TEvent::Key(Key::Enter), area, stdout);
             }
             crossterm::event::Event::Resize(cols, rows) => {
-                win.set_size((cols as usize, rows as usize));
-                let size = win.0.borrow().size;
-                let size = (0..size.0, 0..size.1);
-                draw_inner(&*widget, size, &TEvent::Key(Key::Backspace));
+                area = (cols as usize, rows as usize).into();
+                win.set_area(area.clone());
+                widget.draw(stdout, area)
             }
 
             _ => (),
@@ -459,140 +784,28 @@ fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
     true
 }
 
-fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &TEvent) {
+//***ttk entry point***
+pub fn main(win: &Window) {
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
-
-    match widget.downcast() {
-        Type::Box(tbox) => match tbox.0.borrow().orientation {
-            Orientation::Horizontal => {
-                let children = tbox.get_children();
-                let num = children.len();
-
-                let (x, y) = size;
-
-                let step = (x.end - x.start) / num;
-
-                let ranges: Vec<_> = div(x, num).into_iter().map(|r| (r, y.clone())).collect();
-
-                for (idx, (child, range)) in
-                    children.into_iter().zip(ranges.into_iter()).enumerate()
-                {
-                    queue!(stdout, MoveToColumn((idx * step) as u16)).unwrap();
-                    draw_inner(&*child, range, &event);
-                }
-            }
-            Orientation::Vertical => {
-                let children = tbox.get_children();
-                let num = children.len();
-
-                let (x, y) = size;
-
-                let step = (y.end - y.start) / num;
-
-                let ranges: Vec<_> = div(y, num).into_iter().map(|r| (x.clone(), r)).collect();
-
-                for (idx, (child, range)) in
-                    children.into_iter().zip(ranges.into_iter()).enumerate()
-                {
-                    //todo add movetorow
-                    queue!(stdout, MoveUp(500)).unwrap();
-                    queue!(stdout, MoveDown((idx * step) as u16)).unwrap();
-                    draw_inner(&*child, range, event);
-                }
-            }
-        },
-        Type::Label(label) => {
-            queue!(stdout, Print(label.text())).unwrap();
-        }
-        Type::Button(btn) => {
-            if let TEvent::MouseClick(pos) = event {
-                if size.0.contains(&pos.0) && size.1.contains(&pos.1) {
-                    btn.click();
-                }
-            }
-            let width_max = size.0.end - size.0.start;
-            btn.draw(&mut stdout, width_max);
-            //queue!(stdout, Print(btn.text())).unwrap();
-        }
-        Type::Entry(ent) => {
-            match event {
-                TEvent::MouseClick(pos) => {
-                    if size.0.contains(&pos.0) && size.1.contains(&pos.1) {
-                        ent.0.borrow_mut().active = true;
-                        queue!(stdout, MoveTo(size.0.start as u16, size.1.start as u16)).unwrap();
-                    } else {
-                        ent.0.borrow_mut().active = false;
-                    }
-                }
-                TEvent::Key(Key::Char(c)) if ent.0.borrow().active => {
-                    ent.push(*c);
-                }
-                TEvent::Key(Key::Backspace) if ent.0.borrow().active => {
-                    ent.pop();
-                }
-                TEvent::Key(Key::Enter) if ent.0.borrow().active => {
-                    if let Some(sig) = ent.0.borrow().enter_signal.as_ref() {
-                        sig(&ent)
-                    }
-                }
-                _ => (),
-            }
-            queue!(stdout, Print(ent.text())).unwrap();
-        }
-        Type::List(list) => {
-            let children = list.get_children();
-
-            let num = children.len();
-            let (x, y) = size;
-
-            let child_area: Vec<_> = div(y, num).into_iter().map(|s| (x.clone(), s)).collect();
-
-            queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
-            for (child, area) in children.into_iter().zip(child_area.into_iter()) {
-                draw_inner(&*child, area, event);
-                queue!(stdout, MoveToNextLine(1)).unwrap();
-            }
-        }
-        Type::Grid(grid) => {
-            let children = grid.get_children();
-
-            let num = children.len();
-            let (x, y) = size;
-            let width = grid.0.borrow().width;
-
-            let rows = div(x, width);
-            let cols = div(y, num);
-            let child_area = zip_col(rows, cols);
-
-            queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
-            for (child, area) in children.into_iter().zip(child_area.into_iter()) {
-                queue!(stdout, MoveTo(area.0.start as u16, area.1.start as u16)).unwrap();
-                draw_inner(&*child, area, event);
-            }
-        }
-        Type::Window(_) => unreachable!(),
-    }
-}
-
-pub fn main(win: &Window) {
     let _g = Guard;
     crossterm::terminal::enable_raw_mode().unwrap();
-    crossterm::queue!(std::io::stdout(), EnterAlternateScreen).unwrap();
-    crossterm::queue!(std::io::stdout(), EnableMouseCapture).unwrap();
-    crossterm::queue!(std::io::stdout(), Hide).unwrap();
+    crossterm::queue!(&mut stdout, EnterAlternateScreen).unwrap();
+    crossterm::queue!(&mut stdout, EnableMouseCapture).unwrap();
+    crossterm::queue!(&mut stdout, Hide).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || loop {
         tx.send(crossterm::event::read().unwrap()).unwrap();
     });
+
     loop {
-        queue!(std::io::stdout(), MoveTo(0, 0)).unwrap();
+        queue!(&mut stdout, MoveTo(0, 0)).unwrap();
         queue!(
-            std::io::stdout(),
+            &mut stdout,
             crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
         )
         .unwrap();
-        if !draw(&win, &rx) {
+        if !draw(&win, &mut stdout, &rx) {
             break;
         }
     }
@@ -631,22 +844,4 @@ fn div(r: std::ops::Range<usize>, mut d: usize) -> Vec<Range<usize>> {
 #[test]
 fn test_div() {
     dbg!(div(0..100, 120));
-}
-
-fn zip_col<T: Clone>(rows: Vec<T>, cols: Vec<T>) -> Vec<(T, T)> {
-    let mut v = vec![];
-    for c in cols {
-        for r in rows.iter() {
-            v.push((r.clone(), c.clone()));
-        }
-    }
-    v
-}
-
-#[test]
-fn test_zip_col() {
-    dbg!(zip_col(
-        vec!('a', 'b', 'c'),
-        vec!('1', '2', '3', '4', '5', '6', '7', '8', '9')
-    ));
 }
