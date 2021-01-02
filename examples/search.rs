@@ -4,20 +4,16 @@ fn main() {
     let label = Label::new("search: ");
     let entry = Entry::new();
     let win = Window::new();
-    hbox.add(&label);
-    hbox.add(&entry);
+    hbox.add(label);
+    hbox.add(entry.clone());
 
     let vbox = Box::new(Orientation::Vertical);
     let list = List::new();
 
-    let l1 = Label::new("hello");
-    let l2 = Label::new("world");
-    let l3 = Label::new("test");
-    let l4 = Label::new("world2");
-    list.add(&l1);
-    list.add(&l2);
-    list.add(&l3);
-    list.add(&l4);
+    list.add(Label::new("hello1"));
+    list.add(Label::new("hello2"));
+    list.add(Label::new("world"));
+    list.add(Label::new("test"));
 
     let lc = list.clone();
 
@@ -25,9 +21,9 @@ fn main() {
         lc.set_filter(ent.get_text());
     });
 
-    vbox.add(&hbox);
-    vbox.add(&list);
-    win.add(&vbox);
+    vbox.add(hbox);
+    vbox.add(list);
+    win.add(vbox);
 
     ttk::main(&win);
 }

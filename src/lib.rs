@@ -38,21 +38,21 @@ impl std::fmt::Debug for Type {
 
 //****Widget Trait****
 pub trait Widget {
-    fn downcast(&'static self) -> Type;
-    fn text(&self) -> &'static str;
+    fn downcast(&self) -> Type;
+    fn text(&self) -> &str;
 }
 
 //**Box**
 pub struct Box(RR<_Box>);
 struct _Box {
     orientation: Orientation,
-    children: Vec<&'static dyn Widget>,
+    children: Vec<Rc<dyn Widget>>,
 }
 impl Widget for Box {
     fn downcast(&self) -> Type {
         Type::Box(self.clone())
     }
-    fn text(&self) -> &'static str {
+    fn text(&self) -> &str {
         unreachable!()
     }
 }
@@ -63,24 +63,18 @@ impl Clone for Box {
 }
 
 impl Box {
-    pub fn new(orientation: Orientation) -> Self {
-        Self(Rc::new(RefCell::new(_Box {
+    pub fn new(orientation: Orientation) -> Rc<Self> {
+        Rc::new(Self(Rc::new(RefCell::new(_Box {
             orientation,
             children: vec![],
-        })))
+        }))))
     }
-    pub fn add<'a>(&self, widget: &'a dyn Widget) {
-        let widget = unsafe { std::mem::transmute(widget) };
+    pub fn add(&self, widget: Rc<dyn Widget>) {
         self.0.borrow_mut().children.push(widget);
     }
 
-    fn get_children(&self) -> Vec<&'static dyn Widget> {
-        self.0
-            .borrow()
-            .children
-            .iter()
-            .map(ToOwned::to_owned)
-            .collect()
+    pub fn get_children<'a>(&'a self) -> Vec<Rc<dyn Widget>> {
+        self.0.borrow().children.iter().cloned().collect()
     }
 }
 pub enum Orientation {
@@ -94,8 +88,8 @@ struct _Label {
     label: &'static str,
 }
 impl Label {
-    pub fn new(label: &'static str) -> Self {
-        Self(Rc::new(RefCell::new(_Label { label })))
+    pub fn new(label: &'static str) -> Rc<Self> {
+        Rc::new(Self(Rc::new(RefCell::new(_Label { label }))))
     }
     pub fn set_text(&self, text: &'static str) {
         self.0.borrow_mut().label = text;
@@ -107,7 +101,7 @@ impl Clone for Label {
     }
 }
 impl Widget for Label {
-    fn downcast(&'static self) -> Type {
+    fn downcast(&self) -> Type {
         Type::Label(self.clone())
     }
     fn text(&self) -> &'static str {
@@ -118,15 +112,15 @@ impl Widget for Label {
 //**Button**
 pub struct Button(RR<_Button>);
 struct _Button {
-    label: &'static str,
+    label: String,
     signal: Option<std::boxed::Box<dyn Fn()>>,
 }
 impl Button {
-    pub fn new(label: &'static str) -> Self {
-        Self(Rc::new(RefCell::new(_Button {
+    pub fn new(label: String) -> Rc<Self> {
+        Rc::new(Self(Rc::new(RefCell::new(_Button {
             label,
             signal: None,
-        })))
+        }))))
     }
     pub fn connect_clicked<F: Fn() + 'static>(&self, fun: F) {
         self.0.borrow_mut().signal = Some(std::boxed::Box::new(fun));
@@ -142,31 +136,30 @@ impl Clone for Button {
 }
 
 impl Widget for Button {
-    fn downcast(&'static self) -> Type {
+    fn downcast(&self) -> Type {
         Type::Button(self.clone())
     }
     fn text(&self) -> &'static str {
-        self.0.borrow().label
+        std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().label.clone()))
     }
 }
 
 //**Window**
 pub struct Window(RR<_Window>);
 struct _Window {
-    child: Vec<&'static dyn Widget>,
+    child: Vec<Rc<dyn Widget>>,
     size: (usize, usize),
 }
 impl Window {
-    pub fn new() -> Self {
+    pub fn new() -> Rc<Self> {
         let (w, h) = crossterm::terminal::size().unwrap();
         let size = (w as usize, h as usize);
-        Self(Rc::new(RefCell::new(_Window {
+        Rc::new(Self(Rc::new(RefCell::new(_Window {
             child: vec![],
             size,
-        })))
+        }))))
     }
-    pub fn add<'a>(&self, child: &'a dyn Widget) {
-        let child = unsafe { std::mem::transmute(child) };
+    pub fn add<'a>(&self, child: Rc<dyn Widget>) {
         self.0.borrow_mut().child.insert(0, child);
     }
     fn set_size(&self, size: (usize, usize)) {
@@ -180,7 +173,7 @@ impl Clone for Window {
     }
 }
 impl Widget for Window {
-    fn downcast(&'static self) -> Type {
+    fn downcast(&self) -> Type {
         Type::Window(self.clone())
     }
     fn text(&self) -> &'static str {
@@ -193,29 +186,38 @@ pub struct Entry(RR<_Entry>);
 struct _Entry {
     buffer: String,
     active: bool,
-    signal: Option<std::boxed::Box<dyn Fn(&Entry)>>,
+    changed_signal: Option<std::boxed::Box<dyn Fn(&Entry)>>,
+    enter_signal: Option<std::boxed::Box<dyn Fn(&Entry)>>,
 }
 impl Entry {
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(_Entry {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Entry(Rc::new(RefCell::new(_Entry {
             buffer: String::new(),
             active: false,
-            signal: None,
-        })))
+            changed_signal: None,
+            enter_signal: None,
+        }))))
     }
     pub fn connect_changed<F: Fn(&Self) + 'static>(&self, fun: F) {
-        self.0.borrow_mut().signal = Some(std::boxed::Box::new(fun));
+        self.0.borrow_mut().changed_signal = Some(std::boxed::Box::new(fun));
+    }
+    pub fn connect_enter<F: Fn(&Self) + 'static>(&self, fun: F) {
+        self.0.borrow_mut().enter_signal = Some(std::boxed::Box::new(fun));
     }
     fn push(&self, c: char) {
         self.0.borrow_mut().buffer.push(c);
-        (self.0.borrow().signal.as_ref().unwrap())(self);
+        if let Some(sig) = self.0.borrow().changed_signal.as_ref() {
+            sig(self)
+        }
     }
     fn pop(&self) {
         self.0.borrow_mut().buffer.pop();
-        (self.0.borrow().signal.as_ref().unwrap())(self);
+        if let Some(sig) = self.0.borrow().changed_signal.as_ref() {
+            sig(self)
+        }
     }
     pub fn get_text(&self) -> &'static str {
-        unsafe { std::mem::transmute(self.0.borrow().buffer.as_str()) }
+        std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().buffer.clone()))
     }
 }
 impl Clone for Entry {
@@ -224,22 +226,22 @@ impl Clone for Entry {
     }
 }
 impl Widget for Entry {
-    fn downcast(&'static self) -> Type {
+    fn downcast(&self) -> Type {
         Type::Entry(self.clone())
     }
     fn text(&self) -> &'static str {
-        unsafe { std::mem::transmute(self.0.borrow().buffer.as_str()) }
+        std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().buffer.clone()))
     }
 }
 
 //****List****
 pub struct List(RR<_List>);
 struct _List {
-    items: Vec<&'static dyn Widget>,
+    items: Vec<Rc<dyn Widget>>,
     filter: Option<&'static str>,
 }
 impl Widget for List {
-    fn downcast(&'static self) -> Type {
+    fn downcast(&self) -> Type {
         Type::List(self.clone())
     }
     fn text(&self) -> &'static str {
@@ -252,36 +254,34 @@ impl Clone for List {
     }
 }
 impl List {
-    pub fn new() -> Self {
-        Self(Rc::new(RefCell::new(_List {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self(Rc::new(RefCell::new(_List {
             items: vec![],
             filter: None,
-        })))
+        }))))
     }
-    fn get_children(&self) -> Vec<&'static dyn Widget> {
+    fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         if let Some(filter) = self.0.borrow().filter {
             self.0
                 .borrow()
                 .items
                 .iter()
                 .filter(|i| i.text().contains(filter))
-                .map(ToOwned::to_owned)
+                .cloned()
                 .collect()
         } else {
-            self.0
-                .borrow()
-                .items
-                .iter()
-                .map(ToOwned::to_owned)
-                .collect()
+            self.0.borrow().items.iter().cloned().collect()
         }
     }
-    pub fn add<'a>(&self, widget: &'a dyn Widget) {
-        let widget: &'static dyn Widget = unsafe { std::mem::transmute(widget) };
+    pub fn add<'a>(&self, widget: Rc<dyn Widget>) {
         self.0.borrow_mut().items.push(widget);
     }
     pub fn set_filter(&self, filter: &'static str) {
         self.0.borrow_mut().filter = Some(filter);
+    }
+    pub fn clear(&self) {
+        self.0.borrow_mut().items.clear();
+        self.0.borrow_mut().filter = None;
     }
 }
 
@@ -294,15 +294,16 @@ enum TEvent {
 enum Key {
     Char(char),
     Backspace,
+    Enter,
 }
 
 fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
     let size = win.0.borrow().size;
     let size = (0..size.0, 0..size.1);
-    let widget = win.0.borrow().child[0];
+    let widget = &*win.0.borrow().child[0];
 
     // draw once atleast
-    draw_inner(widget, size.clone(), &TEvent::Nop);
+    draw_inner(&*widget, size.clone(), &TEvent::Nop);
     // flush happens here each frame
     std::io::stdout().flush().unwrap();
 
@@ -311,7 +312,7 @@ fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
             crossterm::event::Event::Mouse(m) => {
                 if let MouseEventKind::Down(_) = m.kind {
                     draw_inner(
-                        widget,
+                        &*widget,
                         size,
                         &TEvent::MouseClick((m.column as usize, m.row as usize)),
                     );
@@ -329,19 +330,25 @@ fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
                 code: crossterm::event::KeyCode::Char(c),
                 ..
             }) => {
-                draw_inner(widget, size, &TEvent::Key(Key::Char(c)));
+                draw_inner(&*widget, size, &TEvent::Key(Key::Char(c)));
             }
             crossterm::event::Event::Key(crossterm::event::KeyEvent {
                 code: crossterm::event::KeyCode::Backspace,
                 ..
             }) => {
-                draw_inner(widget, size, &TEvent::Key(Key::Backspace));
+                draw_inner(&*widget, size, &TEvent::Key(Key::Backspace));
+            }
+            crossterm::event::Event::Key(crossterm::event::KeyEvent {
+                code: crossterm::event::KeyCode::Enter,
+                ..
+            }) => {
+                draw_inner(&*widget, size, &TEvent::Key(Key::Enter));
             }
             crossterm::event::Event::Resize(cols, rows) => {
                 win.set_size((cols as usize, rows as usize));
                 let size = win.0.borrow().size;
                 let size = (0..size.0, 0..size.1);
-                draw_inner(widget, size, &TEvent::Key(Key::Backspace));
+                draw_inner(&*widget, size, &TEvent::Key(Key::Backspace));
             }
 
             _ => (),
@@ -352,7 +359,6 @@ fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
 }
 
 fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &TEvent) {
-    let widget: &'static dyn Widget = unsafe { std::mem::transmute(widget) };
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
 
@@ -372,7 +378,7 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
                     children.into_iter().zip(ranges.into_iter()).enumerate()
                 {
                     queue!(stdout, MoveToColumn((idx * step) as u16)).unwrap();
-                    draw_inner(child, range, &event);
+                    draw_inner(&*child, range, &event);
                 }
             }
             Orientation::Vertical => {
@@ -391,7 +397,7 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
                     //todo add movetorow
                     queue!(stdout, MoveUp(500)).unwrap();
                     queue!(stdout, MoveDown((idx * step) as u16)).unwrap();
-                    draw_inner(child, range, event);
+                    draw_inner(&*child, range, event);
                 }
             }
         },
@@ -422,6 +428,11 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
                 TEvent::Key(Key::Backspace) if ent.0.borrow().active => {
                     ent.pop();
                 }
+                TEvent::Key(Key::Enter) if ent.0.borrow().active => {
+                    if let Some(sig) = ent.0.borrow().enter_signal.as_ref() {
+                        sig(&ent)
+                    }
+                }
                 _ => (),
             }
             queue!(stdout, Print(ent.text())).unwrap();
@@ -436,7 +447,7 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
 
             queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
             for (child, area) in children.into_iter().zip(child_area.into_iter()) {
-                draw_inner(child, area, event);
+                draw_inner(&*child, area, event);
                 queue!(stdout, MoveToNextLine(1)).unwrap();
             }
         }
