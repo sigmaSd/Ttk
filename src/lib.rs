@@ -21,6 +21,7 @@ pub enum Type {
     Button(Button),
     Entry(Entry),
     List(List),
+    Grid(Grid),
 }
 
 impl std::fmt::Debug for Type {
@@ -32,6 +33,7 @@ impl std::fmt::Debug for Type {
             Type::Button(_) => write!(f, "btn"),
             Type::Entry(_) => write!(f, "entry"),
             Type::List(_) => write!(f, "list"),
+            Type::Grid(_) => write!(f, "grid"),
         }
     }
 }
@@ -40,6 +42,25 @@ impl std::fmt::Debug for Type {
 pub trait Widget {
     fn downcast(&self) -> Type;
     fn text(&self) -> &str;
+    fn draw(&self, stdout: &mut std::io::StdoutLock, width_max: usize) {
+        let text = self.text();
+        if text.len() > width_max {
+            crossterm::queue!(
+                stdout,
+                Print(String::from_utf8_lossy(&text.as_bytes()[..width_max]))
+            )
+            .unwrap();
+        } else {
+            crossterm::queue!(stdout, Print(text)).unwrap();
+        }
+    }
+}
+//**Container Trait **/
+pub trait Container: Widget {
+    const MARGIN: usize = 1;
+    fn add(&self, widget: Rc<dyn Widget>);
+    fn get_children(&self) -> Vec<Rc<dyn Widget>>;
+    fn clear(&self);
 }
 
 //**Box**
@@ -69,12 +90,17 @@ impl Box {
             children: vec![],
         }))))
     }
-    pub fn add(&self, widget: Rc<dyn Widget>) {
+}
+
+impl Container for Box {
+    fn add(&self, widget: Rc<dyn Widget>) {
         self.0.borrow_mut().children.push(widget);
     }
-
-    pub fn get_children<'a>(&'a self) -> Vec<Rc<dyn Widget>> {
+    fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         self.0.borrow().children.iter().cloned().collect()
+    }
+    fn clear(&self) {
+        self.0.borrow_mut().children.clear();
     }
 }
 pub enum Orientation {
@@ -159,9 +185,6 @@ impl Window {
             size,
         }))))
     }
-    pub fn add<'a>(&self, child: Rc<dyn Widget>) {
-        self.0.borrow_mut().child.insert(0, child);
-    }
     fn set_size(&self, size: (usize, usize)) {
         self.0.borrow_mut().size = size;
     }
@@ -178,6 +201,17 @@ impl Widget for Window {
     }
     fn text(&self) -> &'static str {
         unreachable!()
+    }
+}
+impl Container for Window {
+    fn add(&self, widget: Rc<dyn Widget>) {
+        self.0.borrow_mut().child.push(widget);
+    }
+    fn get_children(&self) -> Vec<Rc<dyn Widget>> {
+        self.0.borrow().child.iter().cloned().collect()
+    }
+    fn clear(&self) {
+        self.0.borrow_mut().child.clear();
     }
 }
 
@@ -248,18 +282,15 @@ impl Widget for List {
         unreachable!()
     }
 }
-impl Clone for List {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
+impl Container for List {
+    fn add(&self, widget: Rc<dyn Widget>) {
+        self.0.borrow_mut().items.push(widget);
     }
-}
-impl List {
-    pub fn new() -> Rc<Self> {
-        Rc::new(Self(Rc::new(RefCell::new(_List {
-            items: vec![],
-            filter: None,
-        }))))
+
+    fn clear(&self) {
+        self.0.borrow_mut().items.clear();
     }
+
     fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         if let Some(filter) = self.0.borrow().filter {
             self.0
@@ -273,8 +304,18 @@ impl List {
             self.0.borrow().items.iter().cloned().collect()
         }
     }
-    pub fn add<'a>(&self, widget: Rc<dyn Widget>) {
-        self.0.borrow_mut().items.push(widget);
+}
+impl Clone for List {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl List {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self(Rc::new(RefCell::new(_List {
+            items: vec![],
+            filter: None,
+        }))))
     }
     pub fn set_filter(&self, filter: &'static str) {
         self.0.borrow_mut().filter = Some(filter);
@@ -282,6 +323,63 @@ impl List {
     pub fn clear(&self) {
         self.0.borrow_mut().items.clear();
         self.0.borrow_mut().filter = None;
+    }
+}
+
+//**Grid***
+pub struct Grid(RR<_Grid>);
+struct _Grid {
+    items: Vec<Rc<dyn Widget>>,
+    width: usize,
+    filter: Option<&'static str>,
+}
+impl Grid {
+    pub fn new(width: usize) -> Rc<Self> {
+        Rc::new(Self(Rc::new(RefCell::new(_Grid {
+            items: vec![],
+            width,
+            filter: None,
+        }))))
+    }
+    pub fn set_filter(&self, filter: &'static str) {
+        self.0.borrow_mut().filter = Some(filter);
+    }
+}
+
+impl Widget for Grid {
+    fn downcast(&self) -> Type {
+        Type::Grid(self.clone())
+    }
+    fn text(&self) -> &str {
+        unreachable!()
+    }
+}
+impl Container for Grid {
+    fn add(&self, widget: Rc<dyn Widget>) {
+        self.0.borrow_mut().items.push(widget);
+    }
+    fn clear(&self) {
+        self.0.borrow_mut().items.clear();
+    }
+
+    fn get_children<'a>(&'a self) -> Vec<Rc<dyn Widget>> {
+        if let Some(filter) = self.0.borrow().filter {
+            self.0
+                .borrow()
+                .items
+                .iter()
+                .filter(|i| i.text().contains(filter))
+                .cloned()
+                .collect()
+        } else {
+            self.0.borrow().items.iter().cloned().collect()
+        }
+    }
+}
+
+impl Clone for Grid {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
@@ -410,7 +508,9 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
                     btn.click();
                 }
             }
-            queue!(stdout, Print(btn.text())).unwrap();
+            let width_max = size.0.end - size.0.start;
+            btn.draw(&mut stdout, width_max);
+            //queue!(stdout, Print(btn.text())).unwrap();
         }
         Type::Entry(ent) => {
             match event {
@@ -451,7 +551,24 @@ fn draw_inner(widget: &dyn Widget, size: (Range<usize>, Range<usize>), event: &T
                 queue!(stdout, MoveToNextLine(1)).unwrap();
             }
         }
-        _ => unreachable!(),
+        Type::Grid(grid) => {
+            let children = grid.get_children();
+
+            let num = children.len();
+            let (x, y) = size;
+            let width = grid.0.borrow().width;
+
+            let rows = div(x, width);
+            let cols = div(y, num);
+            let child_area = zip_col(rows, cols);
+
+            queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
+            for (child, area) in children.into_iter().zip(child_area.into_iter()) {
+                queue!(stdout, MoveTo(area.0.start as u16, area.1.start as u16)).unwrap();
+                draw_inner(&*child, area, event);
+            }
+        }
+        Type::Window(_) => unreachable!(),
     }
 }
 
@@ -504,4 +621,22 @@ fn div(r: std::ops::Range<usize>, mut d: usize) -> Vec<Range<usize>> {
 #[test]
 fn test_div() {
     dbg!(div(0..100, 120));
+}
+
+fn zip_col<T: Clone>(rows: Vec<T>, cols: Vec<T>) -> Vec<(T, T)> {
+    let mut v = vec![];
+    for c in cols {
+        for r in rows.iter() {
+            v.push((r.clone(), c.clone()));
+        }
+    }
+    v
+}
+
+#[test]
+fn test_zip_col() {
+    dbg!(zip_col(
+        vec!('a', 'b', 'c'),
+        vec!('1', '2', '3', '4', '5', '6', '7', '8', '9')
+    ));
 }

@@ -1,4 +1,4 @@
-use ttk::{Box, Entry, Label, List, Orientation, Window};
+use ttk::{Box, Container, Entry, Label, List, Orientation, Window};
 fn main() {
     let hbox = Box::new(Orientation::Horizontal);
     let label = Label::new("search: ");

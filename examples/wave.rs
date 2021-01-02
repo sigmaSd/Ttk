@@ -1,3 +1,4 @@
+use ttk::Container;
 fn play(s: String) {
     std::process::Command::new("pkill")
         .arg("mpv")
@@ -15,8 +16,8 @@ fn play(s: String) {
 }
 fn main() {
     let vbox = ttk::Box::new(ttk::Orientation::Vertical);
-    let list = ttk::List::new();
-    let list_c = list.clone();
+    let grid = ttk::Grid::new(4);
+    let grid_c = grid.clone();
 
     let label = ttk::Label::new("search: ");
     let entry = ttk::Entry::new();
@@ -24,7 +25,7 @@ fn main() {
     search.add(label);
     search.add(entry.clone());
 
-    vbox.add(list);
+    vbox.add(grid);
     vbox.add(search);
 
     let win = ttk::Window::new();
@@ -39,7 +40,7 @@ fn main() {
         );
 
         let stations: Vec<Station> = client.get(&req).call().into_json_deserialize().unwrap();
-        list_c.clear();
+        grid_c.clear();
 
         for station in stations {
             let url = station.url.clone();
@@ -47,7 +48,7 @@ fn main() {
             btn.connect_clicked(move || {
                 play(url.clone());
             });
-            list_c.add(btn);
+            grid_c.add(btn);
         }
     });
     ttk::main(&win);
