@@ -482,9 +482,12 @@ pub fn main(win: &Window) {
 }
 
 // helpers
-fn div(r: std::ops::Range<usize>, d: usize) -> Vec<Range<usize>> {
+fn div(r: std::ops::Range<usize>, mut d: usize) -> Vec<Range<usize>> {
     if d == 0 || d == 1 {
         return vec![r];
+    }
+    if d > r.end {
+        d = r.end;
     }
     let mut v = vec![];
 
@@ -496,4 +499,9 @@ fn div(r: std::ops::Range<usize>, d: usize) -> Vec<Range<usize>> {
         start = end;
     }
     v
+}
+
+#[test]
+fn test_div() {
+    dbg!(div(0..100, 120));
 }

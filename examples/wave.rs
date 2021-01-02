@@ -24,8 +24,8 @@ fn main() {
     search.add(label);
     search.add(entry.clone());
 
-    vbox.add(search);
     vbox.add(list);
+    vbox.add(search);
 
     let win = ttk::Window::new();
     win.add(vbox);
