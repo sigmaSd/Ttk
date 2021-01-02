@@ -60,6 +60,9 @@ pub trait Container: Widget {
     const MARGIN: usize = 1;
     fn add(&self, widget: Rc<dyn Widget>);
     fn get_children(&self) -> Vec<Rc<dyn Widget>>;
+    fn get_child(&self, n: usize) -> Rc<dyn Widget> {
+        self.get_children().remove(n)
+    }
     fn clear(&self);
 }
 
@@ -398,7 +401,7 @@ enum Key {
 fn draw(win: &Window, rx: &std::sync::mpsc::Receiver<Event>) -> bool {
     let size = win.0.borrow().size;
     let size = (0..size.0, 0..size.1);
-    let widget = &*win.0.borrow().child[0];
+    let widget = win.get_child(0);
 
     // draw once atleast
     draw_inner(&*widget, size.clone(), &TEvent::Nop);
