@@ -25,7 +25,6 @@ fn main() {
     win.add(vbox);
 
     rx.attach(std::boxed::Box::new(move |_| {
-        dbg!("recv");
         p_c.borrow_mut().tick();
     }));
 
@@ -66,9 +65,6 @@ impl Progress {
 
 impl Widget for Progress {
     fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
-        if self.finished() {
-            return Request::None;
-        }
         let width = area.width() - 2; // account for [ ]
         let width_f32 = width as f32;
         let current = (self.current_percent() * width_f32) as usize;
@@ -85,7 +81,11 @@ impl Widget for Progress {
         .unwrap();
         queue!(stdout, Print(bar)).unwrap();
 
-        Request::Redraw
+        if self.finished() {
+            Request::None
+        } else {
+            Request::Redraw
+        }
     }
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.active.clone()
