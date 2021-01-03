@@ -7,7 +7,6 @@ use crossterm::{
 };
 use std::cell::RefCell;
 use std::io::Write;
-use std::unreachable;
 use std::{ops::Range, rc::Rc};
 type RR<T> = Rc<RefCell<T>>;
 
@@ -331,9 +330,6 @@ impl Clone for Window {
     }
 }
 impl Widget for Window {
-    fn text(&self) -> &'static str {
-        unreachable!()
-    }
     fn get_active_state(&self) -> &RefCell<bool> {
         &self.1
     }
@@ -454,9 +450,6 @@ struct _List {
 impl Widget for List {
     fn get_active_state(&self) -> &RefCell<bool> {
         &self.1
-    }
-    fn text(&self) -> &'static str {
-        unreachable!()
     }
     fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
         let children = self.get_children();
