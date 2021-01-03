@@ -1,4 +1,4 @@
-use ttk::Container;
+use ttk::{Container, TTkReceiver};
 fn play(s: String) {
     #[cfg(windows)]
     std::process::Command::new("taskkill")
@@ -64,7 +64,7 @@ fn main() {
             grid_c.add(btn);
         }
     });
-    ttk::main(&win);
+    ttk::main(&win, None::<TTkReceiver<()>>);
 }
 #[derive(Debug, serde::Deserialize)]
 struct Station {
