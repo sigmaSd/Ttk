@@ -105,7 +105,7 @@ pub trait Container: Widget {
 }
 
 //**Filterable trait**/
-trait Filterable: Container {
+pub trait Filterable: Container {
     fn get_children_with_filter(&self, filter: &str) -> Vec<Rc<dyn Widget>>;
 }
 
