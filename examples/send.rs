@@ -35,6 +35,7 @@ fn main() {
 struct Progress {
     max: usize,
     current: usize,
+    started: bool,
     active: Rc<RefCell<bool>>,
 }
 
@@ -43,10 +44,12 @@ impl Progress {
         Rc::new(RefCell::new(Progress {
             max,
             current: 0,
+            started: false,
             active: Rc::new(RefCell::new(false)),
         }))
     }
     fn tick(&mut self) {
+        self.started = true;
         self.current += self.step();
         if self.current > self.max {
             self.current = self.max;
@@ -81,7 +84,7 @@ impl Widget for Progress {
         .unwrap();
         queue!(stdout, Print(bar)).unwrap();
 
-        if self.finished() {
+        if !self.started || self.finished() {
             Request::None
         } else {
             Request::Redraw
