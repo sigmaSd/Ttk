@@ -58,6 +58,11 @@ pub trait Container: Widget {
     fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock);
 }
 
+//**Filterable trait**/
+trait Filterable: Container {
+    fn get_children_with_filter(&self, filter: &str) -> Vec<Rc<dyn Widget>>;
+}
+
 //***Area */
 //The area the widget can be drawn on
 // Also serves to catch signals
@@ -476,13 +481,7 @@ impl Container for List {
 
     fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         if let Some(filter) = self.0.borrow().filter {
-            self.0
-                .borrow()
-                .items
-                .iter()
-                .filter(|i| i.text().contains(filter))
-                .cloned()
-                .collect()
+            self.get_children_with_filter(filter)
         } else {
             self.0.borrow().items.to_vec()
         }
@@ -500,6 +499,17 @@ impl Container for List {
     }
     fn get_children_num(&self) -> usize {
         self.0.borrow().items.iter().count()
+    }
+}
+impl Filterable for List {
+    fn get_children_with_filter(&self, filter: &str) -> Vec<Rc<dyn Widget>> {
+        self.0
+            .borrow()
+            .items
+            .iter()
+            .filter(|child| child.text().contains(filter))
+            .cloned()
+            .collect()
     }
 }
 impl Clone for List {
@@ -584,13 +594,7 @@ impl Container for Grid {
 
     fn get_children(&self) -> Vec<Rc<dyn Widget>> {
         if let Some(filter) = self.0.borrow().filter {
-            self.0
-                .borrow()
-                .items
-                .iter()
-                .filter(|i| i.text().contains(filter))
-                .cloned()
-                .collect()
+            self.get_children_with_filter(filter)
         } else {
             self.0.borrow().items.to_vec()
         }
@@ -637,6 +641,17 @@ impl Container for Grid {
     }
     fn get_children_num(&self) -> usize {
         self.0.borrow().items.iter().count()
+    }
+}
+impl Filterable for Grid {
+    fn get_children_with_filter(&self, filter: &str) -> Vec<Rc<dyn Widget>> {
+        self.0
+            .borrow()
+            .items
+            .iter()
+            .filter(|child| child.text().contains(filter))
+            .cloned()
+            .collect()
     }
 }
 
