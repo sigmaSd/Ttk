@@ -13,35 +13,11 @@ type RR<T> = Rc<RefCell<T>>;
 
 //*******Widgets*************
 
-//***WidgetsList****
-pub enum Type {
-    Box(Box),
-    Window(Window),
-    Label(Label),
-    Button(Button),
-    Entry(Entry),
-    List(List),
-    Grid(Grid),
-}
-
-impl std::fmt::Debug for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Box(_) => write!(f, "box"),
-            Type::Window(_) => write!(f, "win"),
-            Type::Label(_) => write!(f, "label"),
-            Type::Button(_) => write!(f, "btn"),
-            Type::Entry(_) => write!(f, "entry"),
-            Type::List(_) => write!(f, "list"),
-            Type::Grid(_) => write!(f, "grid"),
-        }
-    }
-}
-
 //****Widget Trait****
 pub trait Widget {
-    fn downcast(&self) -> Type;
-    fn text(&self) -> &str;
+    fn text(&self) -> &str {
+        "Widget"
+    }
     fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
         let text = self.text();
         let width = area.width();
@@ -150,12 +126,6 @@ struct _Box {
 impl Widget for Box {
     fn get_active_state(&self) -> &RefCell<bool> {
         &self.1
-    }
-    fn downcast(&self) -> Type {
-        Type::Box(self.clone())
-    }
-    fn text(&self) -> &str {
-        unreachable!()
     }
     fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
         match self.get_orientation() {
@@ -275,9 +245,6 @@ impl Clone for Label {
     }
 }
 impl Widget for Label {
-    fn downcast(&self) -> Type {
-        Type::Label(self.clone())
-    }
     fn text(&self) -> &'static str {
         self.0.borrow().label
     }
@@ -317,9 +284,6 @@ impl Clone for Button {
 }
 
 impl Widget for Button {
-    fn downcast(&self) -> Type {
-        Type::Button(self.clone())
-    }
     fn text(&self) -> &'static str {
         std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().label.clone()))
     }
@@ -367,9 +331,6 @@ impl Clone for Window {
     }
 }
 impl Widget for Window {
-    fn downcast(&self) -> Type {
-        Type::Window(self.clone())
-    }
     fn text(&self) -> &'static str {
         unreachable!()
     }
@@ -447,9 +408,6 @@ impl Widget for Entry {
     fn get_active_state(&self) -> &RefCell<bool> {
         &self.1
     }
-    fn downcast(&self) -> Type {
-        Type::Entry(self.clone())
-    }
     fn text(&self) -> &'static str {
         std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().buffer.clone()))
     }
@@ -496,9 +454,6 @@ struct _List {
 impl Widget for List {
     fn get_active_state(&self) -> &RefCell<bool> {
         &self.1
-    }
-    fn downcast(&self) -> Type {
-        Type::List(self.clone())
     }
     fn text(&self) -> &'static str {
         unreachable!()
@@ -607,12 +562,6 @@ impl Grid {
 impl Widget for Grid {
     fn get_active_state(&self) -> &RefCell<bool> {
         &self.1
-    }
-    fn downcast(&self) -> Type {
-        Type::Grid(self.clone())
-    }
-    fn text(&self) -> &str {
-        unreachable!()
     }
     fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
         let children = self.get_children();
