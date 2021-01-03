@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use crossterm::{cursor::MoveTo, queue, style::Print};
-use ttk::{Area, Box, Button, Container, TEvent, Widget, Window};
+use ttk::{Area, Box, Button, Container, Request, Widget, Window};
 fn main() {
     let vbox = Box::new(ttk::Orientation::Vertical);
     let send_btn = Button::new("Send".into());
@@ -59,10 +59,16 @@ impl Progress {
     fn current_percent(&self) -> f32 {
         self.current as f32 / self.max as f32
     }
+    fn finished(&self) -> bool {
+        self.current == self.max
+    }
 }
 
 impl Widget for Progress {
-    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
+        if self.finished() {
+            return Request::None;
+        }
         let width = area.width() - 2; // account for [ ]
         let width_f32 = width as f32;
         let current = (self.current_percent() * width_f32) as usize;
@@ -78,8 +84,9 @@ impl Widget for Progress {
         )
         .unwrap();
         queue!(stdout, Print(bar)).unwrap();
+
+        Request::Redraw
     }
-    fn event(&self, _event: TEvent, _area: Area, _stdout: &mut std::io::StdoutLock) {}
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.active.clone()
     }

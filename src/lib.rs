@@ -7,6 +7,7 @@ use crossterm::{
 };
 use std::cell::RefCell;
 use std::io::Write;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::{ops::Range, rc::Rc};
 type RR<T> = Rc<RefCell<T>>;
 
@@ -17,7 +18,7 @@ pub trait Widget {
     fn text(&self) -> &str {
         "Widget"
     }
-    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
         let text = self.text();
         let width = area.width();
         if text.len() > width {
@@ -29,19 +30,37 @@ pub trait Widget {
         } else {
             crossterm::queue!(stdout, Print(text)).unwrap();
         }
+        Request::None
     }
-    fn event(&self, _event: TEvent, _area: Area, _stdout: &mut std::io::StdoutLock);
+    fn event(&self, _event: TEvent, _area: Area) -> Request {
+        Request::None
+    }
     fn get_active_state(&self) -> Rc<RefCell<bool>>;
-    fn activate(&self, _area: Area, _stdout: &mut std::io::StdoutLock) {
+    fn activate(&self, _area: Area) {
         *self.get_active_state().borrow_mut() = true;
     }
-    fn deactivate(&self, _area: Area, _stdout: &mut std::io::StdoutLock) {
+    fn deactivate(&self, _area: Area) {
         *self.get_active_state().borrow_mut() = false;
     }
     fn is_active(&self) -> bool {
         *self.get_active_state().borrow()
     }
 }
+// Request a widget can make
+pub enum Request {
+    Redraw,
+    None,
+}
+impl Request {
+    fn merge(&mut self, other: Request) {
+        #[allow(clippy::single_match)]
+        match (self, other) {
+            (s, Self::Redraw) => *s = Self::Redraw,
+            _ => (),
+        }
+    }
+}
+
 impl<T> Widget for RefCell<T>
 where
     T: Widget,
@@ -49,20 +68,20 @@ where
     fn text(&self) -> &str {
         std::boxed::Box::leak(std::boxed::Box::new(self.borrow().text().to_string()))
     }
-    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
-        self.borrow().draw(stdout, area);
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
+        self.borrow().draw(stdout, area)
     }
-    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.borrow().event(event, area, stdout);
+    fn event(&self, event: TEvent, area: Area) -> Request {
+        self.borrow().event(event, area)
     }
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.borrow().get_active_state()
     }
-    fn activate(&self, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.borrow().activate(area, stdout);
+    fn activate(&self, area: Area) {
+        self.borrow().activate(area);
     }
-    fn deactivate(&self, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.borrow().deactivate(area, stdout);
+    fn deactivate(&self, area: Area) {
+        self.borrow().deactivate(area);
     }
 
     fn is_active(&self) -> bool {
@@ -82,7 +101,7 @@ pub trait Container: Widget {
         self.get_children().into_iter().count()
     }
     fn clear(&self);
-    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock);
+    fn propagate_event(&self, event: TEvent, area: Area) -> Request;
 }
 
 //**Filterable trait**/
@@ -158,7 +177,8 @@ impl Widget for Box {
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.1.clone()
     }
-    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
+        let mut request = Request::None;
         match self.get_orientation() {
             Orientation::Horizontal => {
                 let children = self.get_children();
@@ -171,8 +191,9 @@ impl Widget for Box {
                     .enumerate()
                 {
                     queue!(stdout, MoveToColumn((idx * step) as u16)).unwrap();
-                    child.draw(stdout, area);
+                    request.merge(child.draw(stdout, area));
                 }
+                request
             }
             Orientation::Vertical => {
                 let children = self.get_children();
@@ -187,13 +208,14 @@ impl Widget for Box {
                     //todo add movetorow
                     queue!(stdout, MoveUp(500)).unwrap();
                     queue!(stdout, MoveDown((idx * step) as u16)).unwrap();
-                    child.draw(stdout, area);
+                    request.merge(child.draw(stdout, area));
                 }
+                request
             }
         }
     }
-    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.propagate_event(event, area, stdout);
+    fn event(&self, event: TEvent, area: Area) -> Request {
+        self.propagate_event(event, area)
     }
 }
 impl Clone for Box {
@@ -237,15 +259,17 @@ impl Container for Box {
     fn clear(&self) {
         self.0.borrow_mut().children.clear();
     }
-    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+    fn propagate_event(&self, event: TEvent, area: Area) -> Request {
         let children = self.get_children();
         let children_area = self.get_children_area(area);
+        let mut request = Request::None;
         children
             .into_iter()
             .zip(children_area.into_iter())
             .for_each(|(child, area)| {
-                child.event(event, area, stdout);
+                request.merge(child.event(event, area));
             });
+        request
     }
 }
 #[derive(Clone, Copy)]
@@ -282,7 +306,6 @@ impl Widget for Label {
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.1.clone()
     }
-    fn event(&self, _event: TEvent, _area: Area, _stdout: &mut std::io::StdoutLock) {}
 }
 
 //**Button**
@@ -321,12 +344,16 @@ impl Widget for Button {
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.1.clone()
     }
-    fn event(&self, event: TEvent, area: Area, _stdout: &mut std::io::StdoutLock) {
+    fn event(&self, event: TEvent, area: Area) -> Request {
         if let TEvent::MouseClick(pos) = event {
             if area.contains(&pos) {
                 self.click();
+                //todo this is currently unused
+                // but its logically the correct behavior
+                return Request::Redraw;
             }
         }
+        Request::None
     }
 }
 
@@ -365,8 +392,8 @@ impl Widget for Window {
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.1.clone()
     }
-    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.propagate_event(event, area, stdout);
+    fn event(&self, event: TEvent, area: Area) -> Request {
+        self.propagate_event(event, area)
     }
 }
 impl Container for Window {
@@ -379,8 +406,8 @@ impl Container for Window {
     fn clear(&self) {
         self.0.borrow_mut().child.clear();
     }
-    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.get_child(0).event(event, area, stdout);
+    fn propagate_event(&self, event: TEvent, area: Area) -> Request {
+        self.get_child(0).event(event, area)
     }
     fn get_children_area(&self, _area: Area) -> Vec<Area> {
         vec![self.get_area()]
@@ -439,37 +466,32 @@ impl Widget for Entry {
     fn text(&self) -> &'static str {
         std::boxed::Box::leak(std::boxed::Box::new(self.0.borrow().buffer.clone()))
     }
-    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+    fn event(&self, event: TEvent, area: Area) -> Request {
         match event {
             TEvent::MouseClick(pos) => {
                 if area.contains(&pos) {
-                    self.activate(area.clone(), stdout);
+                    self.activate(area);
                 } else {
-                    self.deactivate(area.clone(), stdout);
+                    self.deactivate(area);
                 }
             }
             TEvent::Key(Key::Char(c)) if self.is_active() => {
                 self.push(c);
+                return Request::Redraw;
             }
             TEvent::Key(Key::Backspace) if self.is_active() => {
                 self.pop();
+                return Request::Redraw;
             }
             TEvent::Key(Key::Enter) if self.is_active() => {
                 if let Some(sig) = self.0.borrow().enter_signal.as_ref() {
-                    sig(&self)
+                    sig(&self);
+                    return Request::Redraw;
                 }
             }
             _ => (),
         }
-        self.draw(stdout, area);
-    }
-    fn activate(&self, area: Area, stdout: &mut std::io::StdoutLock) {
-        *self.1.borrow_mut() = true;
-        queue!(
-            stdout,
-            MoveTo(area.left_up().0 as u16, area.left_up().1 as u16)
-        )
-        .unwrap();
+        Request::None
     }
 }
 
@@ -483,18 +505,20 @@ impl Widget for List {
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.1.clone()
     }
-    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
         let children = self.get_children();
         let children_area = self.get_children_area(area);
+        let mut request = Request::None;
 
         queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
         for (child, area) in children.into_iter().zip(children_area.into_iter()) {
-            child.draw(stdout, area);
+            request.merge(child.draw(stdout, area));
             queue!(stdout, MoveToNextLine(1)).unwrap();
         }
+        request
     }
-    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.propagate_event(event, area, stdout);
+    fn event(&self, event: TEvent, area: Area) -> Request {
+        self.propagate_event(event, area)
     }
 }
 impl Container for List {
@@ -513,13 +537,15 @@ impl Container for List {
             self.0.borrow().items.to_vec()
         }
     }
-    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+    fn propagate_event(&self, event: TEvent, area: Area) -> Request {
         let children = self.get_children();
         let children_area = self.get_children_area(area);
+        let mut request = Request::None;
         children
             .into_iter()
             .zip(children_area.into_iter())
-            .for_each(|(child, area)| child.event(event, area, stdout));
+            .for_each(|(child, area)| request.merge(child.event(event, area)));
+        request
     }
     fn get_children_area(&self, area: Area) -> Vec<Area> {
         area.split_vertical(self.get_children_num())
@@ -593,9 +619,10 @@ impl Widget for Grid {
     fn get_active_state(&self) -> Rc<RefCell<bool>> {
         self.1.clone()
     }
-    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) {
+    fn draw(&self, stdout: &mut std::io::StdoutLock, area: Area) -> Request {
         let children = self.get_children();
         let children_area = self.get_children_area(area);
+        let mut request = Request::None;
 
         queue!(stdout, crossterm::cursor::MoveToColumn(0)).unwrap();
         for (child, area) in children.into_iter().zip(children_area.into_iter()) {
@@ -604,11 +631,12 @@ impl Widget for Grid {
                 MoveTo(area.left_up().0 as u16, area.left_up().1 as u16)
             )
             .unwrap();
-            child.draw(stdout, area);
+            request.merge(child.draw(stdout, area));
         }
+        request
     }
-    fn event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
-        self.propagate_event(event, area, stdout);
+    fn event(&self, event: TEvent, area: Area) -> Request {
+        self.propagate_event(event, area)
     }
 }
 impl Container for Grid {
@@ -626,15 +654,17 @@ impl Container for Grid {
             self.0.borrow().items.to_vec()
         }
     }
-    fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
+    fn propagate_event(&self, event: TEvent, area: Area) -> Request {
         let children = self.get_children();
         let children_area = self.get_children_area(area);
+        let mut request = Request::None;
         children
             .into_iter()
             .zip(children_area.into_iter())
             .for_each(|(child, area)| {
-                child.event(event, area, stdout);
-            })
+                request.merge(child.event(event, area));
+            });
+        request
     }
     fn get_children_area(&self, area: Area) -> Vec<Area> {
         let children_num = self.get_children_num();
@@ -704,6 +734,16 @@ pub enum Key {
 
 //***ttk entry point***
 pub fn main<Message>(win: &Window, mut receiver: Option<TTkReceiver<Message>>) {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            crossterm::terminal::disable_raw_mode().unwrap();
+            crossterm::queue!(std::io::stdout(), LeaveAlternateScreen).unwrap();
+            crossterm::queue!(std::io::stdout(), DisableMouseCapture).unwrap();
+            crossterm::queue!(std::io::stdout(), Show).unwrap();
+        }
+    }
+
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
     let _g = Guard;
@@ -721,6 +761,7 @@ pub fn main<Message>(win: &Window, mut receiver: Option<TTkReceiver<Message>>) {
 
     // 30fps
     let frame_rate = std::time::Duration::from_micros(33);
+    let mut request = Request::Redraw;
 
     loop {
         //time the main loop
@@ -739,11 +780,10 @@ pub fn main<Message>(win: &Window, mut receiver: Option<TTkReceiver<Message>>) {
             match ev {
                 crossterm::event::Event::Mouse(m) => {
                     if let MouseEventKind::Down(_) = m.kind {
-                        widget.event(
+                        request.merge(widget.event(
                             TEvent::MouseClick((m.column as usize, m.row as usize)),
                             area.clone(),
-                            &mut stdout,
-                        );
+                        ));
                     }
                 }
                 crossterm::event::Event::Key(crossterm::event::KeyEvent {
@@ -758,59 +798,53 @@ pub fn main<Message>(win: &Window, mut receiver: Option<TTkReceiver<Message>>) {
                     code: crossterm::event::KeyCode::Char(c),
                     ..
                 }) => {
-                    widget.event(TEvent::Key(Key::Char(c)), area.clone(), &mut stdout);
+                    request.merge(widget.event(TEvent::Key(Key::Char(c)), area.clone()));
                 }
                 crossterm::event::Event::Key(crossterm::event::KeyEvent {
                     code: crossterm::event::KeyCode::Backspace,
                     ..
                 }) => {
-                    widget.event(TEvent::Key(Key::Backspace), area.clone(), &mut stdout);
+                    request.merge(widget.event(TEvent::Key(Key::Backspace), area.clone()));
                 }
                 crossterm::event::Event::Key(crossterm::event::KeyEvent {
                     code: crossterm::event::KeyCode::Enter,
                     ..
                 }) => {
-                    widget.event(TEvent::Key(Key::Enter), area.clone(), &mut stdout);
+                    request.merge(widget.event(TEvent::Key(Key::Enter), area.clone()));
                 }
                 crossterm::event::Event::Resize(cols, rows) => {
                     area = (cols as usize, rows as usize).into();
                     win.set_area(area.clone());
-                    widget.draw(&mut stdout, area.clone())
+                    request = Request::Redraw;
                 }
 
                 _ => (),
             }
         }
-        // draw
-        queue!(&mut stdout, MoveTo(0, 0)).unwrap();
-        queue!(
-            &mut stdout,
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
-        )
-        .unwrap();
 
-        widget.draw(&mut stdout, area.clone());
-        stdout.flush().unwrap();
+        // draw
+        if let Request::Redraw = request {
+            queue!(&mut stdout, MoveTo(0, 0)).unwrap();
+            queue!(
+                &mut stdout,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+            )
+            .unwrap();
+
+            //= not merge
+            request = widget.draw(&mut stdout, area.clone());
+            stdout.flush().unwrap();
+        }
 
         //sync the main loop to the frame rate
         let elapsed = now.elapsed();
+
         if elapsed < frame_rate {
             std::thread::sleep(frame_rate - elapsed);
         }
     }
 }
 
-struct Guard;
-impl Drop for Guard {
-    fn drop(&mut self) {
-        crossterm::terminal::disable_raw_mode().unwrap();
-        crossterm::queue!(std::io::stdout(), LeaveAlternateScreen).unwrap();
-        crossterm::queue!(std::io::stdout(), DisableMouseCapture).unwrap();
-        crossterm::queue!(std::io::stdout(), Show).unwrap();
-    }
-}
-
-use std::sync::mpsc::{self, Receiver, Sender};
 pub struct TTkReceiver<Message> {
     rx: Receiver<Message>,
     func: Option<std::boxed::Box<dyn Fn(Message)>>,
