@@ -1,11 +1,23 @@
 use ttk::Container;
 fn play(s: String) {
+    #[cfg(windows)]
+    std::process::Command::new("taskkill")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .arg("/IM")
+        .arg("mpv.exe")
+        .arg("/F")
+        .spawn()
+        .unwrap()
+        .wait();
+    #[cfg(unix)]
     std::process::Command::new("pkill")
         .arg("mpv")
         .spawn()
         .unwrap()
-        .wait()
-        .unwrap();
+        .wait();
+
     std::process::Command::new("mpv")
         .arg(&s)
         .stdin(std::process::Stdio::null())
