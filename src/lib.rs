@@ -221,7 +221,7 @@ impl Container for Box {
         self.0.borrow_mut().children.push(widget);
     }
     fn get_children(&self) -> Vec<Rc<dyn Widget>> {
-        self.0.borrow().children.iter().cloned().collect()
+        self.0.borrow().children.to_vec()
     }
     fn get_children_num(&self) -> usize {
         self.0.borrow().children.iter().count()
@@ -385,7 +385,7 @@ impl Container for Window {
         self.0.borrow_mut().child.push(widget);
     }
     fn get_children(&self) -> Vec<Rc<dyn Widget>> {
-        self.0.borrow().child.iter().cloned().collect()
+        self.0.borrow().child.to_vec()
     }
     fn clear(&self) {
         self.0.borrow_mut().child.clear();
@@ -394,7 +394,7 @@ impl Container for Window {
         self.get_child(0).event(event, area, stdout);
     }
     fn get_children_area(&self, _area: Area) -> Vec<Area> {
-        vec![self.get_area().clone()]
+        vec![self.get_area()]
     }
 }
 
@@ -536,7 +536,7 @@ impl Container for List {
                 .cloned()
                 .collect()
         } else {
-            self.0.borrow().items.iter().cloned().collect()
+            self.0.borrow().items.to_vec()
         }
     }
     fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
@@ -650,7 +650,7 @@ impl Container for Grid {
                 .cloned()
                 .collect()
         } else {
-            self.0.borrow().items.iter().cloned().collect()
+            self.0.borrow().items.to_vec()
         }
     }
     fn propagate_event(&self, event: TEvent, area: Area, stdout: &mut std::io::StdoutLock) {
@@ -673,7 +673,6 @@ impl Container for Grid {
         let areas = area.split_horizontal(width);
         let height = children_num / width;
         let vertical_areas: Vec<_> = areas
-            .clone()
             .into_iter()
             .map(|area| area.split_vertical(height))
             .collect();
@@ -734,52 +733,49 @@ fn draw(
     // flushing happens here each iteration
     stdout.flush().unwrap();
 
-    match rx.recv() {
-        Ok(ev) => match ev {
-            crossterm::event::Event::Mouse(m) => {
-                if let MouseEventKind::Down(_) = m.kind {
-                    widget.event(
-                        TEvent::MouseClick((m.column as usize, m.row as usize)),
-                        area,
-                        stdout,
-                    );
-                }
+    match rx.recv().unwrap() {
+        crossterm::event::Event::Mouse(m) => {
+            if let MouseEventKind::Down(_) = m.kind {
+                widget.event(
+                    TEvent::MouseClick((m.column as usize, m.row as usize)),
+                    area,
+                    stdout,
+                );
             }
-            crossterm::event::Event::Key(crossterm::event::KeyEvent {
-                code: crossterm::event::KeyCode::Char(c),
-                modifiers: crossterm::event::KeyModifiers::CONTROL,
-            }) => {
-                if c == 'c' {
-                    return false;
-                }
+        }
+        crossterm::event::Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char(c),
+            modifiers: crossterm::event::KeyModifiers::CONTROL,
+        }) => {
+            if c == 'c' {
+                return false;
             }
-            crossterm::event::Event::Key(crossterm::event::KeyEvent {
-                code: crossterm::event::KeyCode::Char(c),
-                ..
-            }) => {
-                widget.event(TEvent::Key(Key::Char(c)), area, stdout);
-            }
-            crossterm::event::Event::Key(crossterm::event::KeyEvent {
-                code: crossterm::event::KeyCode::Backspace,
-                ..
-            }) => {
-                widget.event(TEvent::Key(Key::Backspace), area, stdout);
-            }
-            crossterm::event::Event::Key(crossterm::event::KeyEvent {
-                code: crossterm::event::KeyCode::Enter,
-                ..
-            }) => {
-                widget.event(TEvent::Key(Key::Enter), area, stdout);
-            }
-            crossterm::event::Event::Resize(cols, rows) => {
-                area = (cols as usize, rows as usize).into();
-                win.set_area(area.clone());
-                widget.draw(stdout, area)
-            }
+        }
+        crossterm::event::Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Char(c),
+            ..
+        }) => {
+            widget.event(TEvent::Key(Key::Char(c)), area, stdout);
+        }
+        crossterm::event::Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Backspace,
+            ..
+        }) => {
+            widget.event(TEvent::Key(Key::Backspace), area, stdout);
+        }
+        crossterm::event::Event::Key(crossterm::event::KeyEvent {
+            code: crossterm::event::KeyCode::Enter,
+            ..
+        }) => {
+            widget.event(TEvent::Key(Key::Enter), area, stdout);
+        }
+        crossterm::event::Event::Resize(cols, rows) => {
+            area = (cols as usize, rows as usize).into();
+            win.set_area(area.clone());
+            widget.draw(stdout, area)
+        }
 
-            _ => (),
-        },
-        Err(_) => {}
+        _ => (),
     }
     true
 }

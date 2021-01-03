@@ -16,7 +16,8 @@ fn play(s: String) {
         .arg("mpv")
         .spawn()
         .unwrap()
-        .wait();
+        .wait()
+        .unwrap();
 
     std::process::Command::new("mpv")
         .arg(&s)
